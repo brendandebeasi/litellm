@@ -1,5 +1,5 @@
 import json
-from typing import Any, Optional
+from typing import Any, Dict, Optional, Union
 
 from litellm.constants import STREAM_SSE_DONE_STRING
 from litellm.exceptions import AuthenticationError
@@ -27,10 +27,44 @@ from ..common_utils import (
 )
 
 
+def _resolve_chatgpt_token_dir(
+    litellm_params: Union[GenericLiteLLMParams, dict, None],
+) -> Optional[str]:
+    """Extract per-deployment CHATGPT_TOKEN_DIR override from litellm_params.
+
+    Accepts either a GenericLiteLLMParams object or a plain dict (get_complete_url
+    passes a dict). Falls back to None, meaning the Authenticator will use the
+    CHATGPT_TOKEN_DIR env var or its default path.
+    """
+    if litellm_params is None:
+        return None
+    get = (
+        litellm_params.get
+        if isinstance(litellm_params, dict)
+        else lambda k, d=None: getattr(litellm_params, k, d)
+    )
+    token_dir = get("chatgpt_token_dir")
+    if token_dir:
+        return token_dir
+    extra_body = get("extra_body") or {}
+    if isinstance(extra_body, dict):
+        return extra_body.get("chatgpt_token_dir")
+    return None
+
+
 class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
     def __init__(self) -> None:
         super().__init__()
-        self.authenticator = Authenticator()
+        self._authenticators: Dict[str, Authenticator] = {}
+
+    def _get_authenticator(
+        self, litellm_params: Union[GenericLiteLLMParams, dict, None]
+    ) -> Authenticator:
+        token_dir = _resolve_chatgpt_token_dir(litellm_params)
+        key = token_dir or "__default__"
+        if key not in self._authenticators:
+            self._authenticators[key] = Authenticator(token_dir=token_dir)
+        return self._authenticators[key]
 
     @property
     def custom_llm_provider(self) -> LlmProviders:
@@ -42,8 +76,9 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         model: str,
         litellm_params: Optional[GenericLiteLLMParams],
     ) -> dict:
+        authenticator = self._get_authenticator(litellm_params)
         try:
-            access_token = self.authenticator.get_access_token()
+            access_token = authenticator.get_access_token()
         except GetAccessTokenError as e:
             raise AuthenticationError(
                 model=model,
@@ -51,7 +86,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
                 message=str(e),
             )
 
-        account_id = self.authenticator.get_account_id()
+        account_id = authenticator.get_account_id()
         session_id = ensure_chatgpt_session_id(litellm_params)
         default_headers = get_chatgpt_default_headers(
             access_token, account_id, session_id
@@ -197,7 +232,11 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
         api_base: Optional[str],
         litellm_params: dict,
     ) -> str:
-        api_base = api_base or self.authenticator.get_api_base() or CHATGPT_API_BASE
+        if not api_base:
+            api_base = (
+                self._get_authenticator(litellm_params).get_api_base()
+                or CHATGPT_API_BASE
+            )
         api_base = api_base.rstrip("/")
         return f"{api_base}/responses"
 
