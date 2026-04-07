@@ -29,10 +29,11 @@ DEVICE_CODE_POLL_SLEEP_SECONDS = 5
 
 
 class Authenticator:
-    def __init__(self) -> None:
-        self.token_dir = os.getenv(
-            "CHATGPT_TOKEN_DIR",
-            os.path.expanduser("~/.config/litellm/chatgpt"),
+    def __init__(self, token_dir: Optional[str] = None) -> None:
+        self.token_dir = (
+            token_dir
+            or os.getenv("CHATGPT_TOKEN_DIR")
+            or os.path.expanduser("~/.config/litellm/chatgpt")
         )
         self.auth_file = os.path.join(
             self.token_dir, os.getenv("CHATGPT_AUTH_FILE", "auth.json")
